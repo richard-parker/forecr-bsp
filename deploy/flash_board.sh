@@ -270,6 +270,14 @@ info "Copying pinmux and GPIO configs..."
 cp tegra234-mb1-bct-pinmux-p3767-dp-a03.dtsi "$L4T/bootloader/generic/BCT/"
 cp tegra234-mb1-bct-gpio-p3767-dp-a03.dtsi   "$L4T/bootloader/"
 
+info "Installing RTC config tool..."
+if [[ -f rtc_config_tool.sh ]]; then
+    cp rtc_config_tool.sh "$ROOTFS/usr/local/bin/"
+    chmod +x "$ROOTFS/usr/local/bin/rtc_config_tool.sh"
+else
+    warn "rtc_config_tool.sh not found in BSP — skipping."
+fi
+
 info "Extracting kernel modules into rootfs..."
 cd "$ROOTFS"
 tar -jxf "$L4T/kernel/kernel_supplements.tbz2"
@@ -339,6 +347,7 @@ command -v qemu-aarch64-static &>/dev/null || \
 
 info "Preparing chroot environment..."
 cp /usr/bin/qemu-aarch64-static "$ROOTFS/usr/bin/"
+cp "${ROOTFS}/etc/resolv.conf" "${ROOTFS}/etc/resolv.conf.bak" 2>/dev/null || true
 cp /etc/resolv.conf "$ROOTFS/etc/resolv.conf"
 
 mount --bind /proc    "$ROOTFS/proc"
@@ -351,6 +360,7 @@ docker_cleanup() {
     umount "$ROOTFS/dev"     2>/dev/null || true
     umount "$ROOTFS/sys"     2>/dev/null || true
     umount "$ROOTFS/proc"    2>/dev/null || true
+    mv "${ROOTFS}/etc/resolv.conf.bak" "${ROOTFS}/etc/resolv.conf" 2>/dev/null || true
     rm -f  "$ROOTFS/usr/bin/qemu-aarch64-static"
     rm -rf "$WORK_DIR"
 }
@@ -367,7 +377,7 @@ info "Installing Docker CE inside chroot (takes a few minutes)..."
 chroot "$ROOTFS" /bin/bash << CHROOT
 set -e
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -q
+apt-get update -q || apt-get update -q -o Acquire::AllowInsecureRepositories=true
 apt-get install -y -q ca-certificates curl
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
@@ -449,6 +459,7 @@ NM_WAS_RUNNING=false
 if systemctl is-active --quiet NetworkManager; then
     NM_WAS_RUNNING=true
     systemctl stop NetworkManager
+    sleep 2
 fi
 
 pre_flash_cleanup() {
