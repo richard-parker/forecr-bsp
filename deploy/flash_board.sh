@@ -17,8 +17,12 @@
 #   --host       <hostname>  Hostname to set on the board (default: jetson-ornx)
 #   --docker                 Pre-install Docker CE into the rootfs before flashing
 #   --l4t        <path>      Path to Linux_for_Tegra (skips SDK Manager if set)
+#   --rebuild                Force rebuild of flash images even if already built
 #
 # Any omitted credentials will be prompted for interactively.
+# On subsequent flashes of the same board model the script detects pre-built
+# images and jumps straight to flashing (saving ~5 minutes). Pass --rebuild to
+# force a full rebuild (required if you change --user/--pass/--host/--docker).
 
 set -euo pipefail
 
@@ -59,6 +63,7 @@ BOARD_PASS="jetson"
 BOARD_HOST="jetson-ornx"
 INSTALL_DOCKER=false
 L4T_OVERRIDE=""
+REBUILD=false
 
 # ─── Parse arguments ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -73,6 +78,7 @@ while [[ $# -gt 0 ]]; do
         --host)        BOARD_HOST="$2";  shift 2 ;;
         --docker)      INSTALL_DOCKER=true; shift ;;
         --l4t)         L4T_OVERRIDE="$2"; shift 2 ;;
+        --rebuild)     REBUILD=true; shift ;;
         -h|--help) sed -n '2,20p' "$0" | sed 's/^# \?//'; exit 0 ;;
         *) die "Unknown argument: $1  (run with --help)" ;;
     esac
@@ -158,6 +164,20 @@ fi
 L4T_PARENT="$(dirname "$L4T")"
 ROOTFS="$L4T/rootfs"
 
+# ── Detect pre-built images ───────────────────────────────────────────────────
+# If flash images already exist from a prior run, skip Steps 2–7 and jump
+# straight to flashing. Pass --rebuild to force a full rebuild.
+IMAGES_BUILT=false
+if [[ "$REBUILD" == false ]] && \
+   [[ -f "$L4T/tools/kernel_flash/images/external/system.img" ]] && \
+   [[ -f "$L4T/tools/kernel_flash/images/internal/flash.idx"  ]]; then
+    IMAGES_BUILT=true
+    ok "Pre-built flash images found — skipping BSP prep (Steps 2–7)."
+    ok "Pass --rebuild to force a full rebuild (e.g. after changing --user/--docker)."
+fi
+
+if [[ "$IMAGES_BUILT" == false ]]; then
+
 # ═════════════════════════════════════════════════════════════════════════════
 banner "Step 2/8 — Download and Extract Forecr BSP"
 # ═════════════════════════════════════════════════════════════════════════════
@@ -230,6 +250,13 @@ banner "Step 3/8 — Apply L4T Binaries"
 info "Running l4t_flash_prerequisites.sh..."
 cd "$L4T"
 ./tools/l4t_flash_prerequisites.sh
+
+# bzip2 is required to extract kernel_supplements.tbz2 but is not in the
+# l4t_flash_prerequisites list — install it explicitly if missing.
+if ! command -v bzip2 &>/dev/null; then
+    info "Installing missing prerequisite: bzip2..."
+    apt-get install -y -q bzip2
+fi
 
 info "Running apply_binaries.sh..."
 ./apply_binaries.sh
@@ -411,6 +438,8 @@ banner "Step 7/8 — Docker (skipped)"
 info "Pass --docker to pre-install Docker CE into the rootfs."
 fi
 
+fi # end IMAGES_BUILT==false block
+
 # ═════════════════════════════════════════════════════════════════════════════
 banner "Step 8/8 — Flash the Board"
 # ═════════════════════════════════════════════════════════════════════════════
@@ -421,27 +450,26 @@ echo "    1. Hold the Recovery button"
 echo "    2. Press and release Reset (or power cycle while holding Recovery)"
 echo ""
 
-WAIT_SECS=120
+WAIT_SECS=300
 INTERVAL=2
 ELAPSED=0
-printf "  Waiting for board (USB 0955:7323) "
+printf "  Waiting for board in recovery mode (USB 0955:7323) — up to 5 minutes "
 while ! lsusb | grep -q "0955:7323"; do
     if [[ $ELAPSED -ge $WAIT_SECS ]]; then
         echo ""
-        die "Board not detected after ${WAIT_SECS}s. Check USB cable and retry recovery mode."
+        die "Board not detected after ${WAIT_SECS}s.\nCheck: USB cable plugged into the board's USB-C recovery port.\nSequence: power OFF → hold Recovery → apply power → release Recovery after 2s."
     fi
     printf "."
     sleep $INTERVAL
     ELAPSED=$((ELAPSED + INTERVAL))
 done
 echo ""
-ok "Board detected in recovery mode."
+ok "Board detected in APX recovery mode."
 
 # ── UFW: disable if active (blocks IPv6 link-local used by flash tool) ────────
 UFW_WAS_ACTIVE=false
 if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
     warn "UFW is active — disabling it for the duration of the flash."
-    warn "(It will be re-enabled automatically when the script exits.)"
     ufw disable
     UFW_WAS_ACTIVE=true
 fi
@@ -453,31 +481,72 @@ if [[ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)" == "1" ]]; then
     sysctl -w net.ipv6.conf.default.disable_ipv6=0
 fi
 
-# ── NetworkManager: stop so it doesn't grab the USB RNDIS interface ───────────
-info "Stopping NetworkManager to prevent USB interface conflicts..."
-NM_WAS_RUNNING=false
-if systemctl is-active --quiet NetworkManager; then
-    NM_WAS_RUNNING=true
-    systemctl stop NetworkManager
-    sleep 2
+# ── NetworkManager: mark USB CDC/RNDIS interfaces as unmanaged so NM doesn't
+#    grab the flash interface and override its IP. NM stays running for all
+#    other interfaces (WiFi, Ethernet) — no network disruption on the host.
+NM_CONF="/etc/NetworkManager/conf.d/99-forecr-flash.conf"
+NM_CONF_CREATED=false
+if command -v nmcli &>/dev/null && systemctl is-active --quiet NetworkManager; then
+    cat > "$NM_CONF" << 'EOF'
+[keyfile]
+unmanaged-devices=driver:cdc_ether;driver:rndis_host;interface-name:usb0;interface-name:usb1
+EOF
+    nmcli general reload 2>/dev/null || true
+    NM_CONF_CREATED=true
+    ok "NM: USB flash interface marked unmanaged (NM stays running)."
+fi
+
+# ── rndis_host: unload if present — it binds to the Jetson gadget instead of
+#    cdc_ether causing a layer-2 framing mismatch (no traffic, NDP silent).
+RNDIS_WAS_LOADED=false
+if lsmod | grep -q '^rndis_host'; then
+    warn "rndis_host module loaded — unloading it for the duration of the flash."
+    modprobe -r rndis_host
+    RNDIS_WAS_LOADED=true
 fi
 
 pre_flash_cleanup() {
-    if [[ "$NM_WAS_RUNNING" == true ]]; then
-        info "Restarting NetworkManager..."
-        systemctl start NetworkManager
+    set +e
+    if [[ "$RNDIS_WAS_LOADED" == true ]]; then
+        info "Reloading rndis_host..."
+        modprobe rndis_host || true
+    fi
+    if [[ "$NM_CONF_CREATED" == true ]]; then
+        rm -f "$NM_CONF"
+        nmcli general reload 2>/dev/null || true
+        ok "NM: USB interface management restored."
     fi
     if [[ "$UFW_WAS_ACTIVE" == true ]]; then
         info "Re-enabling UFW..."
-        ufw enable
+        ufw enable || true
     fi
     rm -rf "$WORK_DIR"
 }
 trap pre_flash_cleanup EXIT
 
-info "Flashing — this takes 10–15 minutes..."
+# ── SSH keepalive: L4T default ServerAliveCountMax=3 × 90s = 270s timeout.
+#    The 2.5 GB rootfs extraction over NFS/USB takes longer — raise to 25 min.
+FLASH_VARS="$L4T/tools/kernel_flash/l4t_kernel_flash_vars.func"
+if grep -q 'ServerAliveInterval' "$FLASH_VARS" 2>/dev/null; then
+    sed -i \
+        's/oServerAliveInterval=[0-9]*/oServerAliveInterval=15/g;
+         s/oServerAliveCountMax=[0-9]*/oServerAliveCountMax=100/g' \
+        "$FLASH_VARS"
+    ok "SSH keepalive: ServerAliveInterval=15s, CountMax=100 (25 min tolerance)."
+fi
+
+# Use --flash-only when images are pre-built to skip the ~5 min image generation
+# phase inside l4t_initrd_flash.sh. Always requires a fresh APX-mode board.
+FLASH_ONLY_FLAG=()
+if [[ "$IMAGES_BUILT" == true ]]; then
+    FLASH_ONLY_FLAG=(--flash-only)
+    info "Using pre-built images (--flash-only): skipping image generation."
+fi
+
+info "Flashing — this takes 10–20 minutes. Do not disconnect the board."
 cd "$L4T"
 ./tools/kernel_flash/l4t_initrd_flash.sh \
+    "${FLASH_ONLY_FLAG[@]}" \
     --external-device nvme0n1p1 \
     -c tools/kernel_flash/flash_l4t_external.xml \
     -p "-c bootloader/generic/cfg/flash_t234_qspi.xml" \
