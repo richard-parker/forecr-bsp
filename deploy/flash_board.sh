@@ -427,6 +427,23 @@ done
 echo ""
 ok "Board detected in recovery mode."
 
+# ── UFW: disable if active (blocks IPv6 link-local used by flash tool) ────────
+UFW_WAS_ACTIVE=false
+if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+    warn "UFW is active — disabling it for the duration of the flash."
+    warn "(It will be re-enabled automatically when the script exits.)"
+    ufw disable
+    UFW_WAS_ACTIVE=true
+fi
+
+# ── IPv6: must be enabled — flash tool uses fe80:: link-local to reach board ──
+if [[ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)" == "1" ]]; then
+    warn "IPv6 is disabled system-wide — enabling it for the flash."
+    sysctl -w net.ipv6.conf.all.disable_ipv6=0
+    sysctl -w net.ipv6.conf.default.disable_ipv6=0
+fi
+
+# ── NetworkManager: stop so it doesn't grab the USB RNDIS interface ───────────
 info "Stopping NetworkManager to prevent USB interface conflicts..."
 NM_WAS_RUNNING=false
 if systemctl is-active --quiet NetworkManager; then
@@ -434,14 +451,18 @@ if systemctl is-active --quiet NetworkManager; then
     systemctl stop NetworkManager
 fi
 
-nm_restart() {
+pre_flash_cleanup() {
     if [[ "$NM_WAS_RUNNING" == true ]]; then
         info "Restarting NetworkManager..."
         systemctl start NetworkManager
     fi
+    if [[ "$UFW_WAS_ACTIVE" == true ]]; then
+        info "Re-enabling UFW..."
+        ufw enable
+    fi
     rm -rf "$WORK_DIR"
 }
-trap nm_restart EXIT
+trap pre_flash_cleanup EXIT
 
 info "Flashing — this takes 10–15 minutes..."
 cd "$L4T"
@@ -450,7 +471,7 @@ cd "$L4T"
     -c tools/kernel_flash/flash_l4t_external.xml \
     -p "-c bootloader/generic/cfg/flash_t234_qspi.xml" \
     --showlogs \
-    --network usb0 \
+    --network usb0:192.168.55.2/24:192.168.55.1 \
     jetson-orin-nano-devkit internal
 
 echo ""

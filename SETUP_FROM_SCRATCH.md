@@ -244,11 +244,55 @@ echo 'net.ipv4.ip_forward=1' > $ROOTFS/etc/sysctl.d/99-docker.conf
 
 ---
 
-## Step 7 — Put the Board into Recovery Mode
+## Step 7 — Prepare the Host for Flashing
 
-1. Hold the **Recovery** button on the board
-2. Press and release **Reset** (or power cycle while holding Recovery)
-3. Confirm the board is detected:
+The flash tool communicates with the board over **IPv6 link-local** during the initrd phase. Two things on the host commonly block this and cause a timeout.
+
+### 7a — Disable UFW (firewall)
+
+```bash
+sudo ufw status
+```
+
+If it shows `Status: active`, disable it:
+
+```bash
+sudo ufw disable
+```
+
+> Re-enable it after flashing with `sudo ufw enable` if needed.
+
+### 7b — Confirm IPv6 is enabled
+
+```bash
+sysctl net.ipv6.conf.all.disable_ipv6
+```
+
+If it returns `1`, re-enable IPv6:
+
+```bash
+sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
+sudo sysctl -w net.ipv6.conf.default.disable_ipv6=0
+```
+
+### 7c — Stop NetworkManager
+
+NetworkManager will try to claim the USB ethernet interface the moment the board enumerates, which breaks the flash tool's network setup.
+
+```bash
+sudo systemctl stop NetworkManager
+```
+
+> Start it again after flashing: `sudo systemctl start NetworkManager`
+
+---
+
+## Step 8 — Put the Board into Recovery Mode
+
+If the board is **powered off**: hold **Recovery**, then power it on.
+If the board is **already running**: hold **Recovery**, then press and release **Reset**.
+
+Confirm it is detected:
 
 ```bash
 lsusb | grep "0955:7323"
@@ -258,7 +302,7 @@ You must see a result before continuing. If nothing appears, repeat the recovery
 
 ---
 
-## Step 8 — Flash
+## Step 9 — Flash
 
 ```bash
 cd ~/nvidia/nvidia_sdk/JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS/Linux_for_Tegra
@@ -268,22 +312,21 @@ sudo ./tools/kernel_flash/l4t_initrd_flash.sh \
     -c tools/kernel_flash/flash_l4t_external.xml \
     -p "-c bootloader/generic/cfg/flash_t234_qspi.xml" \
     --showlogs \
-    --network usb0 \
+    --network usb0:192.168.55.2/24:192.168.55.1 \
     jetson-orin-nano-devkit internal
 ```
 
 Takes approximately 10–15 minutes. The board reboots automatically when complete.
 
-> **Note:** If NetworkManager tries to claim the USB ethernet interface and disrupts the flash, stop it first:
-> ```bash
-> sudo systemctl stop NetworkManager
-> # run the flash command above
-> sudo systemctl start NetworkManager
-> ```
+Once done, restart NetworkManager:
+
+```bash
+sudo systemctl start NetworkManager
+```
 
 ---
 
-## Step 9 — Post-Flash: Enable the Network
+## Step 10 — Post-Flash: Enable the Network
 
 The Realtek NIC (`enP8p1s0`) is not automatically configured by NetworkManager after a fresh flash. You must create a connection profile once per flash.
 
@@ -332,4 +375,6 @@ docker run --network=local_net --ip=10.1.11.100 <image>
 | `bridge.ko` fails to load | `ipv6.ko` has a symbol CRC mismatch against the custom kernel | Set `"bridge": "none"` in `daemon.json` |
 | Realtek NIC not up after flash | No NetworkManager profile for `enP8p1s0` | Run `nmcli con add ...` once after each flash |
 | GRUB menu not accessible | No `/etc/default/grub` on this board | Use the UEFI 5-second timeout to interrupt boot |
-| Flash fails mid-way | NetworkManager grabbed the USB interface | Stop NetworkManager before flashing |
+| Flash fails mid-way | NetworkManager grabbed the USB interface | Stop NetworkManager before flashing (Step 7c) |
+| `Error: Timeout` / `cannot connect to ssh server` during flash | UFW blocking IPv6 link-local, or IPv6 disabled on the host | Disable UFW (`sudo ufw disable`) and verify IPv6 is enabled (Step 7a/7b) |
+| `ping6 fe80::1%<interface>` fails | Same as above, or board didn't enumerate USB RNDIS correctly | Disable UFW, re-enter recovery mode, retry |
