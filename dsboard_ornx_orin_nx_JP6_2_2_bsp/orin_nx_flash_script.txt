@@ -1,0 +1,45 @@
+
+1- After the Jetson Orin NX module OS created in NVIDIA SDK Manager, copy these files to the specified paths of the NVIDIA SDK Manager's target HW image folder (default target HW image folder: ~/nvidia/nvidia_sdk/).
+
+	# JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS/Image
+	# JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS/kernel_supplements.tbz2
+	# JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS/replace_bsp_files.sh
+	# JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS/tegra234-mb1-bct-gpio-p3767-dp-a03.dtsi
+	# JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS/tegra234-mb1-bct-pinmux-p3767-dp-a03.dtsi
+	# JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS/tegra234-p3767-camera-dsboard-ornx-imx219.dtbo
+	# JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS/tegra234-p3767-camera-dsboard-ornx-imx477.dtbo
+	# JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS/tegra234-p3768-0000+p3767-0000-nv.dtb
+	# JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS/tegra234-p3768-0000+p3767-0000-nv-super.dtb
+	# JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS/tegra234-p3768-0000+p3767-0001-nv.dtb
+	# JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS/tegra234-p3768-0000+p3767-0001-nv-super.dtb
+
+
+2- Open a terminal and change the current directory into the Linux_for_Tegra and apply the binaries.
+
+	$ cd ~/nvidia/nvidia_sdk/JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS/Linux_for_Tegra/
+	$ sudo ./tools/l4t_flash_prerequisites.sh
+	$ sudo ./apply_binaries.sh
+
+	$ cd ..
+	$ sudo ./replace_bsp_files.sh
+	$ cd Linux_for_Tegra/
+
+#[Optional] Create the user with default configurations
+	$ sudo tools/l4t_create_default_user.sh -u forecr -p forecr -a -n forecr-desktop --accept-license
+
+
+3- Set Jetson Orin NX in recovery mode, connect the Recovery USB, check the detected device with "lsusb" command and flash the image.
+
+	# For Orin NX 16GB
+	$ lsusb | grep 0955:7323
+	# For Orin NX 8GB
+	$ lsusb | grep 0955:7423
+
+	$ sudo ./tools/kernel_flash/l4t_initrd_flash.sh --external-device nvme0n1p1 -c tools/kernel_flash/flash_l4t_external.xml -p "-c bootloader/generic/cfg/flash_t234_qspi.xml" --showlogs --network usb0 jetson-orin-nano-devkit internal
+
+If you want to flash with Super Configuration, you can flash it with:
+	$ sudo ./tools/kernel_flash/l4t_initrd_flash.sh --external-device nvme0n1p1 -c tools/kernel_flash/flash_l4t_external.xml -p "-c bootloader/generic/cfg/flash_t234_qspi.xml" --showlogs --network usb0 jetson-orin-nano-devkit-super internal
+
+
+4- After the Jetson module rebooted, it becomes ready for use.
+

@@ -1,0 +1,7 @@
+# Large binary build artifacts — too big for git
+dsboard_ornx_orin_nx_JP6_2_2_bsp/Image
+dsboard_ornx_orin_nx_JP6_2_2_bsp/kernel_supplements.tbz2
+dsboard_ornx_orin_nx_JP6_2_2_bsp_real.tar.xz
+
+# Claude Code internal settings
+.claude/
