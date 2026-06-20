@@ -82,17 +82,27 @@ The download is approximately 10 GB and takes 20–40 minutes.
 
 ---
 
-## Step 2 — Download the Forecr BSP
+## Step 2 — Download and Extract the Forecr BSP
 
-Go to [forecr.io](https://forecr.io), find the DSBOX-ORNX product page, and copy the direct download URL for the **JetPack 6.2.2 BSP**. Then download and extract it:
+Go to [forecr.io](https://forecr.io), find the DSBOX-ORNX product page, and copy the direct download URL for the **JetPack 6.2.2 BSP**.
+
+The BSP files must land **directly inside the JetPack directory** (alongside `Linux_for_Tegra`), not in a subdirectory. `replace_bsp_files.sh` uses relative paths and will silently do nothing if run from the wrong location.
 
 ```bash
 curl -L -o forecr_bsp.tar.xz "<paste-url-here>"
-tar -xf forecr_bsp.tar.xz
-cd dsboard_ornx_orin_nx_JP6_2_2_bsp
+
+tar -xf forecr_bsp.tar.xz --strip-components=1 \
+    -C ~/nvidia/nvidia_sdk/JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS/
 ```
 
-You should have these files:
+Verify the files are in the right place:
+
+```bash
+ls ~/nvidia/nvidia_sdk/JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS/Image
+ls ~/nvidia/nvidia_sdk/JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS/replace_bsp_files.sh
+```
+
+Both must exist before continuing. You should also see:
 
 ```
 Image                                               # custom kernel
@@ -106,6 +116,7 @@ tegra234-p3767-camera-dsboard-ornx-imx477.dtbo
 tegra234-mb1-bct-pinmux-p3767-dp-a03.dtsi          # pinmux config
 tegra234-mb1-bct-gpio-p3767-dp-a03.dtsi            # GPIO config
 replace_bsp_files.sh                               # Forecr copy script
+rtc_config_tool.sh                                 # RTC utility
 ```
 
 ---
@@ -122,14 +133,16 @@ sudo ./apply_binaries.sh
 
 ---
 
-## Step 4 — Copy Forecr BSP Files into L4T
+## Step 4 — Apply Forecr BSP Files into L4T
 
-From the extracted BSP directory, run Forecr's copy script:
+Run Forecr's copy script from the JetPack directory, where the BSP files were extracted in Step 2:
 
 ```bash
 cd ~/nvidia/nvidia_sdk/JetPack_6.2.2_Linux_JETSON_ORIN_NX_TARGETS
-sudo bash dsboard_ornx_orin_nx_JP6_2_2_bsp/replace_bsp_files.sh
+sudo bash replace_bsp_files.sh
 ```
+
+> **Important:** The script must be run from this directory — not from a subdirectory. It uses relative paths like `Linux_for_Tegra/kernel/Image` and will fail silently (printing "Done." regardless) if the source files are not in the current working directory.
 
 ### What this script does
 
